@@ -56,9 +56,11 @@ static uint32_t snwTimestamp = 0;
 
 #define SNW_PACKET_PERIOD_MS ( 5 * 60 * 1000 )
 #define SNW_KEY ( (uint32_t) 0xA5A5 )
+#define SNW_BITS_PER_SYMBOL ( 8 )
 #define SNW_PHASE_DELTA_MS ( 50 )
 #define SNW_DELAY_MIN_MS ( 0 )
-#define SNW_DELAY_MAX_MS ( 10 * SNW_PHASE_DELTA_MS )
+#define SNW_DELAY_WINDOW_MS ( ( 1 << SNW_BITS_PER_SYMBOL ) * SNW_PHASE_DELTA_MS )
+#define SNW_DELAY_MAX_MS ( 2 * SNW_DELAY_WINDOW_MS )
 
 /* USER CODE END PD */
 
@@ -120,7 +122,7 @@ static void OnJoinTimerLedEvent(void *context);
 
 static uint32_t calcWatermark(uint32_t oldData, uint32_t newData, uint32_t key);
 
-static uint32_t calcDelayMS(uint32_t oldDelay, uint8_t phase, uint32_t delta, uint32_t delayMin, uint32_t delayMax);
+static uint32_t calcDelayMS(uint32_t oldDelay, int8_t *direction, uint8_t phase, uint32_t delta, uint32_t delayMin, uint32_t delayMax);
 
 static void OnSNWTimerEvent(void *context);
 
@@ -354,27 +356,26 @@ static uint32_t calcWatermark(uint32_t oldData, uint32_t newData, uint32_t key)
     return reg;
 }
 
-static uint32_t calcDelayMS(uint32_t oldDelay, uint8_t phase, uint32_t delta, uint32_t delayMin, uint32_t delayMax)
+static uint32_t calcDelayMS(uint32_t oldDelay, int8_t *direction, uint8_t phase, uint32_t delta, uint32_t delayMin, uint32_t delayMax)
 {
-    // Based on previous timestamp calc the next delta after the 10min
+    // Based on previous timestamp calc the next1 delta after the 10min
     // timer
     int32_t delay = 0;
-    static int8_t direction = 1;
 
-    delay = oldDelay + (direction * phase * delta);
+    delay = oldDelay + (*direction * phase * delta);
 
-    if ( delay < (int32_t) delayMin )
+    if ( *direction == 1 && delay > (int32_t) delayMax )
     {
-	// back to start -> increase delay from now on
-	direction = 1;
-	delay = oldDelay + (direction * phase * delta);
+	// At maximum window -> decrease delay
+	APP_PPRINTF("At maximum window -> decrease (%d > %d)\r\n", delay, delayMax);
+	*direction = -1;
     }
 
-    if ( delay > (int32_t) delayMax)
+    else if ( *direction == -1 && delay < (int32_t) delayMax )
     {
-	// at maximum delay -> decrease from now on
-	direction = -1;
-	delay = oldDelay + (direction * phase * delta);
+	// At maximum window -> increase delay
+	APP_PPRINTF("At maximum window -> increase (%d < %d)\r\n", delay, delayMax);
+	*direction = 1;
     }
 
     return (uint32_t) delay;
@@ -408,6 +409,7 @@ static void OnSNWTimerEvent(void *context)
     uint32_t watermark = 0;
     uint32_t delay = 0;
     uint8_t phase = 0;
+    static int8_t direction = 1;
 
     snwTimestamp = SysTimeToMs(SysTimeGet());
     APP_PPRINTF("\r\n################\r\n");
@@ -415,11 +417,11 @@ static void OnSNWTimerEvent(void *context)
 
     // Calculate watermark, phase and delay
     watermark = calcWatermark(oldTimestamp, snwTimestamp, SNW_KEY);
-    phase = ((oldPhase ^ (watermark & 0x1)) & 0x1);
+    phase = watermark & 0xFF;
 
-    delay = calcDelayMS(oldDelay, phase, SNW_PHASE_DELTA_MS, SNW_DELAY_MIN_MS, SNW_DELAY_MAX_MS);
+    delay = calcDelayMS(oldDelay, &direction, phase, SNW_PHASE_DELTA_MS, SNW_DELAY_MIN_MS, SNW_DELAY_WINDOW_MS);
 
-    APP_PPRINTF("Watermark: 0x%x (%x), Phase: %x, Delay: %d\r\n", watermark, watermark & 0x1, phase, delay);
+    APP_PPRINTF("Watermark: 0x%x, Phase: %x, Delay: %d\r\n", watermark, phase, delay);
 
     if (delay == 0)
     {
