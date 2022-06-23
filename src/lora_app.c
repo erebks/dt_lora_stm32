@@ -56,7 +56,7 @@ static uint32_t snwTimestamp = 0;
 
 #define SNW_PACKET_PERIOD_MS ( 5 * 60 * 1000 )
 #define SNW_KEY ( (uint32_t) 0xA5A5 )
-#define SNW_BITS_PER_SYMBOL ( 8 )
+#define SNW_BITS_PER_SYMBOL ( 2 )
 #define SNW_PHASE_DELTA_MS ( 50 )
 #define SNW_DELAY_MIN_MS ( 0 )
 #define SNW_DELAY_WINDOW_MS ( ( 1 << SNW_BITS_PER_SYMBOL ) * SNW_PHASE_DELTA_MS )
@@ -417,7 +417,7 @@ static void OnSNWTimerEvent(void *context)
 
     // Calculate watermark, phase and delay
     watermark = calcWatermark(oldTimestamp, snwTimestamp, SNW_KEY);
-    phase = watermark & 0xFF;
+    phase = watermark & ( ( 1 << SNW_BITS_PER_SYMBOL ) -1 );
 
     delay = calcDelayMS(oldDelay, &direction, phase, SNW_PHASE_DELTA_MS, SNW_DELAY_MIN_MS, SNW_DELAY_WINDOW_MS);
 
