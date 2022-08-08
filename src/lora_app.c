@@ -42,7 +42,7 @@
 /* External variables ---------------------------------------------------------*/
 /* USER CODE BEGIN EV */
 
-static uint32_t snwTimestamp = 0;
+static uint32_t snwData = 0;
 
 /* USER CODE END EV */
 
@@ -56,11 +56,12 @@ static uint32_t snwTimestamp = 0;
 
 #define SNW_PACKET_PERIOD_MS ( 5 * 60 * 1000 )
 #define SNW_KEY ( (uint32_t) 0xA5A5 )
-#define SNW_BITS_PER_SYMBOL ( 2 )
+#define SNW_BITS_PER_SYMBOL ( 4 )
 #define SNW_PHASE_DELTA_MS ( 50 )
 #define SNW_DELAY_MIN_MS ( 0 )
 #define SNW_DELAY_WINDOW_MS ( ( 1 << SNW_BITS_PER_SYMBOL ) * SNW_PHASE_DELTA_MS )
 #define SNW_DELAY_MAX_MS ( 2 * SNW_DELAY_WINDOW_MS )
+#define VERY_RANDOM_SEED ( (uint16_t) 0xC0FEu)
 
 /* USER CODE END PD */
 
@@ -127,6 +128,8 @@ static uint32_t calcDelayMS(uint32_t oldDelay, int8_t *direction, uint8_t phase,
 static void OnSNWTimerEvent(void *context);
 
 static void OnSNWSendTimerEvent(void *context);
+
+static uint16_t xorshift(uint16_t lsrg);
 
 /* USER CODE END PFP */
 
@@ -389,21 +392,21 @@ static void OnSNWSendTimerEvent(void *context)
     UTIL_TIMER_Time_t nextTxIn = 0;
     LmHandlerMsgTypes_t isTxConfirmed = LORAMAC_HANDLER_UNCONFIRMED_MSG;
 
-    payload[0] = (uint8_t) snwTimestamp;
-    payload[1] = (uint8_t) (snwTimestamp >> 8);
-    payload[2] = (uint8_t) (snwTimestamp >> 16);
-    payload[3] = (uint8_t) (snwTimestamp >> 24);
+    payload[0] = (uint8_t) snwData;
+    payload[1] = (uint8_t) (snwData >> 8);
+    payload[2] = (uint8_t) (snwData >> 16);
+    payload[3] = (uint8_t) (snwData >> 24);
 
     AppData.BufferSize = 4;
     AppData.Port = 1;
     LmHandlerSend(&AppData, isTxConfirmed, &nextTxIn, 0);
 
-    APP_PPRINTF("TS: %d sent! @%d\r\n", snwTimestamp, SysTimeToMs(SysTimeGet()));
+    APP_PPRINTF("Data: %d sent! @%d ms\r\n", snwData, SysTimeToMs(SysTimeGet()));
 }
 
 static void OnSNWTimerEvent(void *context)
 {
-    static uint32_t oldTimestamp = 0;
+    static uint32_t oldData = VERY_RANDOM_SEED;
     static uint32_t oldDelay = 0;
     static uint8_t oldPhase = 0;
     uint32_t watermark = 0;
@@ -411,12 +414,12 @@ static void OnSNWTimerEvent(void *context)
     uint8_t phase = 0;
     static int8_t direction = 1;
 
-    snwTimestamp = SysTimeToMs(SysTimeGet());
+    snwData = xorshift(oldData);
     APP_PPRINTF("\r\n################\r\n");
-    APP_PPRINTF("SNW TIMER TS: %d\r\n", snwTimestamp);
+    APP_PPRINTF("SNW TIMER TS: %d ms; Data: %d\r\n", SysTimeToMs(SysTimeGet()), snwData);
 
     // Calculate watermark, phase and delay
-    watermark = calcWatermark(oldTimestamp, snwTimestamp, SNW_KEY);
+    watermark = calcWatermark(oldData, snwData, SNW_KEY);
     phase = watermark & ( ( 1 << SNW_BITS_PER_SYMBOL ) -1 );
 
     delay = calcDelayMS(oldDelay, &direction, phase, SNW_PHASE_DELTA_MS, SNW_DELAY_MIN_MS, SNW_DELAY_WINDOW_MS);
@@ -436,9 +439,18 @@ static void OnSNWTimerEvent(void *context)
 	UTIL_TIMER_Start(&SNWSendTimer);
     }
 
-    oldTimestamp = snwTimestamp;
+    oldData = snwData;
     oldDelay = delay;
     oldPhase = phase;
+}
+
+static uint16_t xorshift(uint16_t lfsr)
+{
+    // Hattip to: http://www.retroprogramming.com/2017/07/xorshift-pseudorandom-numbers-in-z80.html
+    lfsr ^= lfsr << 7;
+    lfsr ^= lfsr >> 9;
+    lfsr ^= lfsr << 8;
+    return lfsr;
 }
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
