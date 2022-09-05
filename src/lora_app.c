@@ -354,7 +354,8 @@ static uint32_t calcWatermark(uint32_t oldData, uint32_t newData, uint32_t key)
 {
     // "hash" function (XOR)
     // First 13 bit are not chaning with timestamp as data
-    uint32_t reg = ( oldData >> 13 ) ^ ( newData >> 13 ) ^ key;
+//    uint32_t reg = ( oldData >> 13 ) ^ ( newData >> 13 ) ^ key;
+    uint32_t reg = oldData ^ newData ^ key;
 
     return reg;
 }
