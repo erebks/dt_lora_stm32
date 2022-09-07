@@ -57,9 +57,9 @@ static uint32_t snwData = 0;
 #define SNW_PACKET_PERIOD_MS ( 5 * 60 * 1000 )
 #define SNW_KEY ( (uint32_t) 0xA5A5 )
 #define SNW_BITS_PER_SYMBOL ( 4 )
-#define SNW_PHASE_DELTA_MS ( 50 )
+#define SNW_STEP_SIZE_MS ( 50 )
 #define SNW_DELAY_MIN_MS ( 0 )
-#define SNW_DELAY_WINDOW_MS ( ( 1 << SNW_BITS_PER_SYMBOL ) * SNW_PHASE_DELTA_MS )
+#define SNW_DELAY_WINDOW_MS ( ( 1 << SNW_BITS_PER_SYMBOL ) * SNW_STEP_SIZE_MS )
 #define SNW_DELAY_MAX_MS ( 2 * SNW_DELAY_WINDOW_MS )
 #define VERY_RANDOM_SEED ( (uint16_t) 0xC0FEu)
 
@@ -123,7 +123,7 @@ static void OnJoinTimerLedEvent(void *context);
 
 static uint32_t calcWatermark(uint32_t oldData, uint32_t newData, uint32_t key);
 
-static uint32_t calcDelayMS(uint32_t oldDelay, int8_t *direction, uint8_t phase, uint32_t delta, uint32_t delayMin, uint32_t delayMax);
+static uint32_t calcDelayMS(uint32_t prevSymbolDelay, int8_t *direction, uint8_t effWatermark, uint32_t stepSize, uint32_t delayMin, uint32_t delayMax);
 
 static void OnSNWTimerEvent(void *context);
 
@@ -360,29 +360,29 @@ static uint32_t calcWatermark(uint32_t oldData, uint32_t newData, uint32_t key)
     return reg;
 }
 
-static uint32_t calcDelayMS(uint32_t oldDelay, int8_t *direction, uint8_t phase, uint32_t delta, uint32_t delayMin, uint32_t delayMax)
+static uint32_t calcDelayMS(uint32_t prevSymbolDelay, int8_t *direction, uint8_t effWatermark, uint32_t stepSize, uint32_t delayMin, uint32_t delayMax)
 {
     // Based on previous timestamp calc the next1 delta after the 10min
     // timer
-    int32_t delay = 0;
+    int32_t symbolDelay = 0;
 
-    delay = oldDelay + (*direction * phase * delta);
+    symbolDelay = prevSymbolDelay + (*direction * effWatermark * stepSize);
 
-    if ( *direction == 1 && delay > (int32_t) delayMax )
+    if ( *direction == 1 && symbolDelay > (int32_t) delayMax )
     {
 	// At maximum window -> decrease delay
-	APP_PPRINTF("At maximum window -> decrease (%d > %d)\r\n", delay, delayMax);
+	APP_PPRINTF("At maximum window -> decrease (%d > %d)\r\n", symbolDelay, delayMax);
 	*direction = -1;
     }
 
-    else if ( *direction == -1 && delay < (int32_t) delayMax )
+    else if ( *direction == -1 && symbolDelay < (int32_t) delayMax )
     {
 	// At maximum window -> increase delay
-	APP_PPRINTF("At maximum window -> increase (%d < %d)\r\n", delay, delayMax);
+	APP_PPRINTF("At maximum window -> increase (%d < %d)\r\n", symbolDelay, delayMax);
 	*direction = 1;
     }
 
-    return (uint32_t) delay;
+    return (uint32_t) symbolDelay;
 }
 
 static void OnSNWSendTimerEvent(void *context)
@@ -407,42 +407,38 @@ static void OnSNWSendTimerEvent(void *context)
 
 static void OnSNWTimerEvent(void *context)
 {
-    static uint32_t oldData = VERY_RANDOM_SEED;
-    static uint32_t oldDelay = 0;
-    static uint8_t oldPhase = 0;
-    uint32_t watermark = 0;
-    uint32_t delay = 0;
-    uint8_t phase = 0;
-    static int8_t direction = 1;
+    static uint32_t prevData = VERY_RANDOM_SEED; // "Measurement" data
+                                                 // of the previous transmission
 
-    snwData = xorshift(oldData);
+    // symbolDelay is the delay which directly holds the watermark
+    uint32_t symbolDelay = 0;
+    static uint32_t prevSymbolDelay = 0;
+    static int8_t direction = 1; // Increase or decrese delay
+
+    uint32_t watermark = 0; // Watermark which is calculated
+    uint8_t effWatermark = 0; // Effective watermark according to
+                              // embedded bits
+    static uint8_t prevEffWatermark = 0;
+
+    snwData = xorshift(prevData);
     APP_PPRINTF("\r\n################\r\n");
     APP_PPRINTF("SNW TIMER TS: %d ms; Data: %d\r\n", SysTimeToMs(SysTimeGet()), snwData);
 
     // Calculate watermark, phase and delay
-    watermark = calcWatermark(oldData, snwData, SNW_KEY);
-    phase = watermark & ( ( 1 << SNW_BITS_PER_SYMBOL ) -1 );
+    watermark = calcWatermark(prevData, snwData, SNW_KEY);
+    effWatermark = watermark & ( ( 1 << SNW_BITS_PER_SYMBOL ) -1 );
 
-    delay = calcDelayMS(oldDelay, &direction, phase, SNW_PHASE_DELTA_MS, SNW_DELAY_MIN_MS, SNW_DELAY_WINDOW_MS);
+    symbolDelay = calcDelayMS(prevSymbolDelay, &direction, effWatermark, SNW_STEP_SIZE_MS, SNW_DELAY_MIN_MS, SNW_DELAY_WINDOW_MS);
 
-    APP_PPRINTF("Watermark: 0x%x, Phase: %x, Delay: %d\r\n", watermark, phase, delay);
+    APP_PPRINTF("Watermark: 0x%x, Phase: %x, Delay: %d\r\n", watermark, effWatermark, symbolDelay);
 
-    if (delay == 0)
-    {
-	// Send right away
-	UTIL_TIMER_SetPeriod(&SNWSendTimer, 0);
-	UTIL_TIMER_Start(&SNWSendTimer);
-    }
-    else
-    {
-	// Set period and start timer
-	UTIL_TIMER_SetPeriod(&SNWSendTimer, delay);
-	UTIL_TIMER_Start(&SNWSendTimer);
-    }
+    // Set the timer to send the actual message
+    UTIL_TIMER_SetPeriod(&SNWSendTimer, symbolDelay);
+    UTIL_TIMER_Start(&SNWSendTimer);
 
-    oldData = snwData;
-    oldDelay = delay;
-    oldPhase = phase;
+    prevData = snwData;
+    prevSymbolDelay = symbolDelay;
+    prevEffWatermark = effWatermark;
 }
 
 static uint16_t xorshift(uint16_t lfsr)
