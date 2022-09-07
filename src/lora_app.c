@@ -62,6 +62,14 @@ static uint32_t snwData = 0;
 #define SNW_DELAY_WINDOW_MS ( ( 1 << SNW_BITS_PER_SYMBOL ) * SNW_STEP_SIZE_MS )
 #define SNW_DELAY_MAX_MS ( 2 * SNW_DELAY_WINDOW_MS )
 #define VERY_RANDOM_SEED ( (uint16_t) 0xC0FEu)
+#define VERY_RANDOM_SEED_2 ( (uint16_t) 0xBEEFu)
+
+#define DRY_RUN ( 0 )
+
+#if(DRY_RUN == 1)
+#undef SNW_PACKET_PERIOD_MS
+#define SNW_PACKET_PERIOD_MS (10 * 1000)
+#endif
 
 /* USER CODE END PD */
 
@@ -247,7 +255,9 @@ void LoRaWAN_Init(void)
   APP_PPRINTF("AT? to list all available functions\r\n");
 
   // Join network
+#if(DRY_RUN == 0)
   LmHandlerJoin(ACTIVATION_TYPE_OTAA);
+#endif
 
   UTIL_TIMER_Start(&SNWTimer);
   /* USER CODE END LoRaWAN_Init_Last */
@@ -400,7 +410,10 @@ static void OnSNWSendTimerEvent(void *context)
 
     AppData.BufferSize = 4;
     AppData.Port = 1;
+
+#if(DRY_RUN == 0)
     LmHandlerSend(&AppData, isTxConfirmed, &nextTxIn, 0);
+#endif
 
     APP_PPRINTF("Data: %d sent! @%d ms\r\n", snwData, SysTimeToMs(SysTimeGet()));
 }
@@ -420,6 +433,11 @@ static void OnSNWTimerEvent(void *context)
                               // embedded bits
     static uint8_t prevEffWatermark = 0;
 
+    static uint16_t spreadingSeed = VERY_RANDOM_SEED_2;
+    uint16_t spreadingDelay = 0;
+
+    uint32_t delay = 0;
+
     snwData = xorshift(prevData);
     APP_PPRINTF("\r\n################\r\n");
     APP_PPRINTF("SNW TIMER TS: %d ms; Data: %d\r\n", SysTimeToMs(SysTimeGet()), snwData);
@@ -430,10 +448,15 @@ static void OnSNWTimerEvent(void *context)
 
     symbolDelay = calcDelayMS(prevSymbolDelay, &direction, effWatermark, SNW_STEP_SIZE_MS, SNW_DELAY_MIN_MS, SNW_DELAY_WINDOW_MS);
 
-    APP_PPRINTF("Watermark: 0x%x, Phase: %x, Delay: %d\r\n", watermark, effWatermark, symbolDelay);
+    spreadingSeed = xorshift(spreadingSeed);
+    spreadingDelay = SNW_DELAY_WINDOW_MS + ((spreadingSeed * SNW_DELAY_MAX_MS) >> 16);
+
+    delay = symbolDelay + spreadingDelay;
+
+    APP_PPRINTF("Watermark: 0x%x, Phase: %x, symbolDelay: %d, spreadingDelay: %d, delay: %d\r\n", watermark, effWatermark, symbolDelay, spreadingDelay, delay);
 
     // Set the timer to send the actual message
-    UTIL_TIMER_SetPeriod(&SNWSendTimer, symbolDelay);
+    UTIL_TIMER_SetPeriod(&SNWSendTimer, delay);
     UTIL_TIMER_Start(&SNWSendTimer);
 
     prevData = snwData;
