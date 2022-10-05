@@ -34,6 +34,7 @@
 #include "LmHandler.h"
 #include "lora_command.h"
 #include "lora_at.h"
+#include "adc_if.h"
 
 /* USER CODE BEGIN Includes */
 
@@ -61,7 +62,6 @@ static uint32_t snwData = 0;
 #define SNW_DELAY_MIN_MS ( 0 )
 #define SNW_DELAY_WINDOW_MS ( ( 1 << SNW_BITS_PER_SYMBOL ) * SNW_STEP_SIZE_MS )
 #define SNW_DELAY_MAX_MS ( 2 * SNW_DELAY_WINDOW_MS )
-#define VERY_RANDOM_SEED ( (uint16_t) 0xC0FEu)
 
 /* USER CODE END PD */
 
@@ -128,8 +128,6 @@ static uint32_t calcDelayMS(uint32_t prevSymbolDelay, int8_t *direction, uint8_t
 static void OnSNWTimerEvent(void *context);
 
 static void OnSNWSendTimerEvent(void *context);
-
-static uint16_t xorshift(uint16_t lsrg);
 
 /* USER CODE END PFP */
 
@@ -250,6 +248,7 @@ void LoRaWAN_Init(void)
   LmHandlerJoin(ACTIVATION_TYPE_OTAA);
 
   UTIL_TIMER_Start(&SNWTimer);
+
   /* USER CODE END LoRaWAN_Init_Last */
 }
 
@@ -407,8 +406,9 @@ static void OnSNWSendTimerEvent(void *context)
 
 static void OnSNWTimerEvent(void *context)
 {
-    static uint32_t prevData = VERY_RANDOM_SEED; // "Measurement" data
-                                                 // of the previous transmission
+    static uint32_t prevData = 0; // "Measurement" data
+                                  // of the previous transmission
+                                  // Init with 0
 
     // symbolDelay is the delay which directly holds the watermark
     uint32_t symbolDelay = 0;
@@ -420,9 +420,22 @@ static void OnSNWTimerEvent(void *context)
                               // embedded bits
     static uint8_t prevEffWatermark = 0;
 
-    snwData = xorshift(prevData);
+    // Note: The ADC val is calculated to degC in adc_if.c, however
+    // they seem to use a Q7.8 notation. [-128degC, +128degC]
+    // Using kelvin will ease the complexity. Therefore we'll need to
+    // add 273.15.
+    // To keep in the uint16_t range we need to use a UQ10_6 notation,
+    // therefore [0, 1024K].
+    // 6 bits for fraction is more than enough!
+    uint16_t temperature_K_UQ10_6 = ( SYS_GetTemperatureLevel() >> 2 ) + (17481); // 273.15 << 6
+
+    uint16_t bat_mV = SYS_GetBatteryLevel();
+
+    snwData = (uint32_t) ( bat_mV << 16) | ( temperature_K_UQ10_6 );
+
     APP_PPRINTF("\r\n################\r\n");
-    APP_PPRINTF("SNW TIMER TS: %d ms; Data: %d\r\n", SysTimeToMs(SysTimeGet()), snwData);
+
+    APP_PPRINTF("SNW TIMER TS: %d ms; temp (UQ10_6): %d K, bat: %d mV, Data: %d\r\n", SysTimeToMs(SysTimeGet()), temperature_K_UQ10_6, bat_mV, snwData);
 
     // Calculate watermark, phase and delay
     watermark = calcWatermark(prevData, snwData, SNW_KEY);
@@ -439,15 +452,6 @@ static void OnSNWTimerEvent(void *context)
     prevData = snwData;
     prevSymbolDelay = symbolDelay;
     prevEffWatermark = effWatermark;
-}
-
-static uint16_t xorshift(uint16_t lfsr)
-{
-    // Hattip to: http://www.retroprogramming.com/2017/07/xorshift-pseudorandom-numbers-in-z80.html
-    lfsr ^= lfsr << 7;
-    lfsr ^= lfsr >> 9;
-    lfsr ^= lfsr << 8;
-    return lfsr;
 }
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
